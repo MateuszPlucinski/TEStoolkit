@@ -1,0 +1,358 @@
+---
+title: "Angola 2019 TES Results"
+author: ""
+date: ""
+output:
+  html_document:
+    code_folding: hide
+    highlight: zenburn
+    number_sections: no
+    theme: spacelab
+    toc: yes
+    toc_collapse: no
+    toc_depth: 4
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message= FALSE, warning = FALSE)
+```
+
+## Importation and processing of raw data sets
+
+The Excel databases were read and processed to extract the necessary variables.
+
+```{r, cache=TRUE, results = "hide"}
+require(XLConnect)
+require(stringr)
+require(gtools)
+require(readxl)
+
+data = as.data.frame(read_excel("ExampleTES dataset - Angola_TES_2019_dataset.xlsx", sheet = "Follow Up"))
+data_screening = as.data.frame(read_excel("ExampleTES dataset - Angola_TES_2019_dataset.xlsx", sheet = "Screening"))
+
+```
+
+
+## Definition of study arms
+
+All indicators were calculated stratifying by drug and site:
+
+* **Benguela**, Artemether lumefantrine (AL)
+* **Benguela**, Artesunate amodiaquine (ASAQ)
+* **Zaire**, Artemether lumefantrine (AL)
+* **Zaire**, Artesunate amodiaquine (ASAQ)
+* **Lunda Sul**, Artemether lumefantrine (AL)
+* **Lunda Sul**, Artesunate amodiaquine (ASAQ)
+
+```{r arms}
+
+arms = list(which(data$Province == "Benguela" & data$Drug == "AL"),
+		which(data$Province == "Benguela" & data$Drug == "ASAQ"),
+		which(data$Province == "Zaire" & data$Drug == "AL"),
+		which(data$Province == "Zaire" & data$Drug == "ASAQ"),
+		which(data$Province == "Lunda Sul" & data$Drug == "AL"),
+		which(data$Province == "Lunda Sul" & data$Drug == "ASAQ")) 
+
+arms_screening = list(which(data_screening$Province == "Benguela" & data_screening$Drug == "AL"),
+		which(data_screening$Province == "Benguela" & data_screening$Drug == "ASAQ"),
+		which(data_screening$Province == "Zaire" & data_screening$Drug == "AL"),
+		which(data_screening$Province == "Zaire" & data_screening$Drug == "ASAQ"),
+		which(data_screening$Province == "Lunda Sul" & data_screening$Drug == "AL"),
+		which(data_screening$Province == "Lunda Sul" & data_screening$Drug == "ASAQ"))
+
+
+## for appropriate labeling of tables
+arm_names_drug = c("AL","ASAQ","AL","ASAQ","AL","ASAQ")
+arm_names_province = c("Benguela","Zaire","Lunda Sul")
+
+arm_duration = rep(28,length(arms))
+arm_duration[grepl("DP",arm_names_drug) | grepl("PA",arm_names_drug)] = 42
+
+library(leaflet)
+library(htmltools)
+## site table
+sitetable = matrix("",length(arms),4)
+sitetable[1,] = c("Benguela",-12.5906892,13.3614925,"<b>Benguela</b><br/>AL and ASAQ")
+sitetable[2,] = c("Zaire",-6.2698899,14.2208145,"<b>Zaire</b><br/>AL and ASAQ")
+sitetable[3,] = c("Lunda Sul",-9.6708543,20.3704755,"<b>Lunda Sul</b><br/>AL and ASAQ")
+sitetable = as.data.frame(sitetable)
+colnames(sitetable) = c("labels","latdata","longdata","popup_text")
+
+icons <- awesomeIcons(
+  icon = 'ios-close',
+  iconColor = 'black',
+  library = 'ion',
+  markerColor = "blue"
+)
+
+
+leaflet() %>% addTiles() %>% 
+  addAwesomeMarkers(lat=as.numeric(sitetable$latdata),lng=as.numeric(sitetable$longdata), label = sitetable$labels,popup=(sitetable$popup_text),icon=icons)
+
+```
+
+## Patients enrolled and reaching study outcome and participant characteristics at baseline
+
+The number of patients screened, enrolled, excluded, and lost to follow up were tabulated. Participant characteristics at baseline were summarized by study arm.
+
+```{r endpoint}
+table_endpoint = matrix("",5,length(arms))
+library(stringr)
+addpercent = function(x,y) {
+	paste(x," (",str_trim(format(100*x/y,digits=1)),")",sep = "")
+}
+# screened
+
+table_endpoint[1,] = t(sapply(arms_screening, function (x) dim(data_screening[x,])[1]))
+
+# enrolled
+table_endpoint[2,] = t(sapply(arms, function (x) dim(data[x,])[1]))
+# loss to follow up
+table_endpoint[3,] = addpercent(t(sapply(arms, function (x) sum(grepl("lost_to_follow_up",data[x,"Classification"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) dim(data[x,])[1])))
+table_endpoint[4,] = addpercent(t(sapply(arms, function (x) sum(grepl("excluded",data[x,"Classification"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) dim(data[x,])[1])))
+table_endpoint[5,] = addpercent(t(sapply(arms, function (x) sum(grepl("ACPR",data[x,"Classification"],ignore.case = TRUE))+sum(grepl("TF",data[x,"Classification"],ignore.case = FALSE)))),
+					  t(sapply(arms, function (x) dim(data[x,])[1])))
+
+rownames(table_endpoint) = c("Total screened","Total enrolled","Loss to Follow up","Exclusion","Reached study endpoint")
+
+
+table_demographics = matrix("",6,length(arms))
+# n
+
+# those correctly enrolled:
+correctlyenrolled = !(grepl("excluded", data$Classification))
+# Age median (range)
+table_demographics[2,] = t(sapply(arms, function (x) paste(format(median(data$Age[intersect(x,which(!(grepl("excluded", data$Classification))))],na.rm=TRUE),digits=2)," (",format(range(data$Age[intersect(x,which(!(grepl("excluded", data$Classification))))],na.rm=TRUE)[1],digits=1),"-",format(range(data$Age[intersect(x,which(!(grepl("excluded", data$Classification))))],na.rm=TRUE)[2],digits=1),")",sep="")))
+# peso median (range)
+table_demographics[3,] = t(sapply(arms, function (x) paste(format(median(data$Weight[intersect(x,which(!(grepl("excluded", data$Classification))))],na.rm=TRUE),digits=2)," (",format(range(data$Weight[intersect(x,which(!(grepl("excluded", data$Classification))))],na.rm=TRUE)[1],digits=1),"-",format(range(data$Weight[intersect(x,which(!(grepl("excluded", data$Classification))))],na.rm=TRUE)[2],digits=1),")",sep="")))
+# percent female 
+
+table_demographics[4,] = t(sapply(arms, function (x) paste(format(100*sum(data$Sex[intersect(x,which(!(grepl("excluded", data$Classification))))]=="F")/(sum(data$Sex[intersect(x,which(!(grepl("excluded", data$Classification))))]=="F")+sum(data$Sex[intersect(x,which(!(grepl("excluded", data$Classification))))]=="M")),digits=2),"%",sep="")))
+# day 0 parasitemia
+table_demographics[5,] = t(sapply(arms, function (x) paste(format(median(data$"Parasitemia d0"[intersect(x,which(!(grepl("excluded", data$Classification))))]),digits=2)," (",format(range(data$"Parasitemia d0"[intersect(x,which(!(grepl("excluded", data$Classification))))])[1],digits=1),"-",format(range(data$"Parasitemia d0"[intersect(x,which(!(grepl("excluded", data$Classification))))])[2],scientific=FALSE,digits=2),")",sep="")))
+# day 0 hemoglobin
+table_demographics[6,] = t(sapply(arms, function (x) paste(format(median(data$"Hemoglobin d0"[intersect(x,which(!(grepl("excluded", data$Classification))))],na.rm=TRUE),digits=3)," (",format(range(data$"Hemoglobin d0"[intersect(x,which(!(grepl("excluded", data$Classification))))],na.rm=TRUE)[1],digits=3),"-",format(range(data$"Hemoglobin d0"[intersect(x,which(!(grepl("excluded", data$Classification))))],na.rm=TRUE)[2],scientific=FALSE,digits=3),")",sep="")))
+
+
+rownames(table_demographics) = c("Participant characteristics at baseline","Median Age","Median weight", "% Female","Baseline parasite density","Baseline hemoglobin")
+
+table_endpointanddemographics = rbind(table_endpoint,table_demographics)
+
+firstrow_labels = (c(" ", rep(2,length(arm_names_province))))
+names(firstrow_labels) = c("",arm_names_province)
+secondrow_labels = (c(" ", rep(1,length(arm_names_drug))))
+names(secondrow_labels) = c("",arm_names_drug)
+
+library(kableExtra)
+
+kbl(table_endpointanddemographics, caption = "Table 1. Number of participants screened, enrolled, and finishing follow-up and characteristics at baseline as part of therapeutic efficacy monitoring in Angola, 2019", escape=FALSE) %>%
+# add_indent(c(2:12,14:17,19:24), level_of_indent = 1) %>%
+  add_header_above(secondrow_labels) %>%
+add_header_above(firstrow_labels) %>%
+ kable_classic(full_width = F)  %>%
+  add_indent(c(3:5,7:11), level_of_indent = 1, all_cols = FALSE) %>%
+  footnote(general="AL: Artemether lumefantrine; ASAQ: Artesunate amodiaquine",general_title="")
+```
+
+
+## Slide positivity on Day 3
+
+The proportion of slides negative on Day 2 and Day 3 were calculated. 
+
+```{r clearance}
+table_clearance = matrix("",2,length(arms))
+
+fractionandpercent = function(x,y) {
+	#paste(x,"/",y," (",str_trim(format(100*x/y,digits=1)),"%)",sep = "")
+	proportionobject = prop.test(x,y)
+	paste(str_trim(format(100*proportionobject$est,digits=1)), " (",str_trim(format(100*proportionobject$conf[1],digits=1)),
+			"-",str_trim(format(100*proportionobject$conf[2],digits=1)),")",sep = "")
+}
+
+table_clearance[1,] = sapply(arms, function (x) fractionandpercent(sum(data[x,"Parasitemia d2"]==0,na.rm=TRUE),
+											  sum(!is.na(data[x,"Parasitemia d2"]))))
+table_clearance[2,] = sapply(arms, function (x) fractionandpercent(sum(data[x,"Parasitemia d3"]==0,na.rm=TRUE),
+											  sum(!is.na(data[x,"Parasitemia d3"]))))
+rownames(table_clearance) = c("Day 2 slide negativity","Day 3 slide negativity")
+
+
+
+firstrow_labels = (c(" ", rep(2,length(arm_names_province))))
+names(firstrow_labels) = c("",arm_names_province)
+secondrow_labels = (c(" ", rep(1,length(arm_names_drug))))
+names(secondrow_labels) = c("",arm_names_drug)
+
+kbl(table_clearance, caption = "Table 2. Proportion of slides negative for asexual malaria parasites on day 2 and 3 following antimalarial treatment, therapeutic efficacy monitoring in Angola, 2019",escape=FALSE) %>%
+    add_header_above(secondrow_labels) %>%
+add_header_above(firstrow_labels) %>%
+ kable_classic(full_width = F) %>%
+  footnote(general="AL: Artemether lumefantrine; ASAQ: Artesunate amodiaquine",general_title="")
+
+```
+
+
+## Participant outcomes
+
+Participants' outcomes were classified according the WHO guidance for antimalarial efficacy trials:
+
+* **Early Treatment Failure**
+  + Danger signs or severe malaria on day 1, 2, or 3 in the presence of parasitemia
+  + A parasitemia on day 2 higher than day 0
+  + Axillary temperature ≥ 37.5 °C on day 3 in the presence of parasitemia
+  + Parasitemia on day 3 ≥ 25% of day 0 parasitemia
+* **Late Treatment Failure**
+  + *Recrudescence*
+    - Danger signs, signs of severe malaria, or axillary temperature > 37.5 °C in the presence of parasitemia (with a parasite with the same genotype as day 0) on any day between day 4 and day 28 in patients who did not previously meet any of the criteria of early treatment failure
+    - Presence of parasitemia (with a parasite with the same genotype as day 0) on any day between day 7 and day 28 regardless of temperature in patients who did not previously meet any of the criteria of early treatment failure
+  + *Reinfection*
+    - Same definition as recrudescence, but with a parasite with a different genotype on day of failure and day 0
+* **Adequate Clinical and Parasitological Response**
+  + Absence of parasitemia on day 28, irrespective of axillary temperature, in patients who did not previously meet any of the criteria of early treatment failure, late clinical failure, reinfection or late parasitological failure.
+
+Participant outcomes were tabulated stratifying by study arm.
+
+```{r}
+
+
+dayspassed= data[,grepl("Day",colnames(data))]
+dayspassed = as.data.frame(as.matrix(dayspassed))
+dayspassed[,1:dim(dayspassed)[2]] = sapply(1:dim(dayspassed)[2],function (x) as.numeric(as.character(dayspassed[,x])))
+
+lastvisit = apply(as.matrix(dayspassed),1,function (x) max(x,na.rm=TRUE))
+secondtolastvisit = (sapply(1:dim(data)[1],function (x) sort(dayspassed[x,])[length(sort(dayspassed[x,]))-1]))
+secondtolastvisit[lastvisit == 0] = 0
+secondtolastvisit = unlist(secondtolastvisit)
+failure_uncorrected = grepl("TF",data[,"Classification"])
+
+
+#recrudescences = late_treatment_failures[which((reclassification_data[,-1])>0.5)]
+#reinfections = late_treatment_failures[which((reclassification_data[,-1])<=0.5)]
+microsatellite_correction = rep(NA,dim(data)[1])
+
+microsatellite_correction[data$`Molecular correction classification` <=0.5] = "Reinfection"
+microsatellite_correction[data$`Molecular correction classification` >0.5] = "Recrudescence"
+
+
+addpercent = function(x,y) {
+	paste(x," (",str_trim(format(100*x/y,digits=1)),")",sep = "")
+}
+
+table_endpoint= matrix("",19,6)
+table_endpoint[1,] = paste("n=",t(sapply(arms, function (x) sum(grepl("ACPR",data[x,"Classification"],ignore.case = TRUE))+sum(grepl("TF",data[x,"Classification"],ignore.case = FALSE)))),sep="")
+table_endpoint[2,] = addpercent(t(sapply(arms, function (x) sum(grepl("TF",data[x,"Classification"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) sum(grepl("ACPR",data[x,"Classification"],ignore.case = TRUE))+sum(grepl("TF",data[x,"Classification"],ignore.case = FALSE)))))
+table_endpoint[3,] = addpercent(t(sapply(arms, function (x) sum(grepl("ETF",data[x,"Classification"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) sum(grepl("ACPR",data[x,"Classification"],ignore.case = TRUE))+sum(grepl("TF",data[x,"Classification"],ignore.case = FALSE)))))
+table_endpoint[4,] = addpercent(t(sapply(arms, function (x) sum(grepl("LTF",data[x,"Classification"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) sum(grepl("ACPR",data[x,"Classification"],ignore.case = TRUE))+sum(grepl("TF",data[x,"Classification"],ignore.case = FALSE)))))
+table_endpoint[5,] = addpercent(t(sapply(arms, function (x) sum(grepl("LTF",data[x,"Classification"],ignore.case = TRUE) & microsatellite_correction[x] == "Recrudescence"))),
+					  t(sapply(arms, function (x) sum(grepl("ACPR",data[x,"Classification"],ignore.case = TRUE))+sum(grepl("TF",data[x,"Classification"],ignore.case = FALSE)))))
+table_endpoint[6:11,] = t(sapply(c(7,14,21,28,35,42), function (y) addpercent(t(sapply(arms, function (x) sum(grepl("LTF",data[x,"Classification"],ignore.case = TRUE) & lastvisit[x] <= y+2 & lastvisit[x] >= y-2 & microsatellite_correction[x] == "Recrudescence"))),
+					  t(sapply(arms, function (x) sum(grepl("ACPR",data[x,"Classification"],ignore.case = TRUE))+sum(grepl("TF",data[x,"Classification"],ignore.case = FALSE)))))))
+table_endpoint[12,] = addpercent(t(sapply(arms, function (x) sum(grepl("LTF",data[x,"Classification"],ignore.case = TRUE) & microsatellite_correction[x] == "Reinfection"))),
+					  t(sapply(arms, function (x) sum(grepl("ACPR",data[x,"Classification"],ignore.case = TRUE))+sum(grepl("TF",data[x,"Classification"],ignore.case = FALSE)))))
+table_endpoint[13:18,] = t(sapply(c(7,14,21,28,35,42), function (y) addpercent(t(sapply(arms, function (x) sum(grepl("LTF",data[x,"Classification"],ignore.case = TRUE) & lastvisit[x] <= y+2 & lastvisit[x] >= y-2 & microsatellite_correction[x] == "Reinfection"))),
+					  t(sapply(arms, function (x) sum(grepl("ACPR",data[x,"Classification"],ignore.case = TRUE))+sum(grepl("TF",data[x,"Classification"],ignore.case = FALSE)))))))
+table_endpoint[19,] = addpercent(t(sapply(arms, function (x) sum(grepl("ACPR",data[x,"Classification"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) sum(grepl("ACPR",data[x,"Classification"],ignore.case = TRUE))+sum(grepl("TF",data[x,"Classification"],ignore.case = FALSE)))))
+table_endpoint[table_endpoint == "0 (0)"] = "0"
+rownames(table_endpoint) = c("","Treatment failure","Early treatment failure","Late treatment failure","Recrudescence","Day 7","Day 14","Day 21","Day 28","Day 35","Day 42",
+                                                                                                    "Reinfection","Day 7", "Day 14","Day 21","Day 28","Day 35","Day 42",
+                             "Adequate clinical and parasitological response")
+
+firstrow_labels = (c(" ", rep(2,length(arm_names_province))))
+names(firstrow_labels) = c("",arm_names_province)
+secondrow_labels = (c(" ", rep(1,length(arm_names_drug))))
+names(secondrow_labels) = c("",arm_names_drug)
+
+table_endpoint[c(10:11,17:18),arm_duration == 28] = ""
+
+kbl(table_endpoint, caption = "Table 3. Treatment outcomes for participants finishing follow-up as part of therapeutic efficacy monitoring in Angola, 2019",escape=F) %>%
+    add_header_above(secondrow_labels) %>%
+add_header_above(firstrow_labels) %>%
+ kable_classic(full_width = F) %>%
+  add_indent(c(3:18), level_of_indent = 1, all_cols = FALSE)  %>%
+  add_indent(c(5:18), level_of_indent = 1, all_cols = FALSE)  %>%
+  add_indent(c(6:11,13:18), level_of_indent = 1, all_cols = FALSE)  %>%
+  footnote(general="*Confidence intervals are undefined\nAL: Artemether lumefantrine; ASAQ: Artesunate amodiaquine",general_title="")
+
+```
+
+
+## Primary and secondary efficacy indicators
+
+Uncorrected and corrected efficacy estimates were calculated using the Kaplan-Meier estimate of the survival function. For study arms with a 42-day follow up, efficacies at both Day 28 (a secondary indicator) and Day 42 (the primary indicator) were calculated.  
+
+```{r}
+library(survival)
+outcome_uncorrected=rep(0,length(data$Classification))
+outcome_uncorrected[data$Classification %in% c("LTF")] = 1
+outcome_uncorrected[data$Classification %in% c("ETF")] = 1
+
+lastvisit_uncorrected = lastvisit
+data$outcome = outcome_uncorrected
+data$lastvisit = lastvisit_uncorrected
+
+data$`Molecular correction classification`[is.na(data$`Molecular correction classification`)] = 0
+data$`Molecular correction classification`[data$Classification == "ETF"] = 1
+
+#cbind(data$`Molecular correction classification`,data$Codigo)
+
+
+fitKM = function(lastvisit,outcome,trial_duration) {
+	survivaldata = Surv(lastvisit,outcome)
+	km_model = survfit(survivaldata~1,conf.lower = "peto")
+	km_estimate = summary(km_model,times=trial_duration)$surv*100
+	km_loCI = summary(km_model,times=trial_duration)$lower*100
+	km_upCI = summary(km_model,times=trial_duration)$upper*100
+	c(km_estimate,km_loCI,km_upCI)
+}
+bootstrap_KM = function(data,missingvalue,trial_duration) {
+	posteriorprob = data$`Molecular correction classification`
+	posteriorprob[is.na(posteriorprob)] = missingvalue 
+	if (sum(posteriorprob) > 0) {
+		simulated_outcome_matrix = t(sapply(posteriorprob , function (x) sample(c(0,1), nruns, replace = TRUE, prob = c(1-x,x))))
+		km_estimated = sapply(1:nruns, function (x) fitKM(data$lastvisit,simulated_outcome_matrix[,x],trial_duration))
+		result = 	c(mean(km_estimated[1,]), mean(km_estimated[2,]), mean(km_estimated[3,]))
+	} else {
+		result = c(100,100,100)
+	}
+	paste(format(result[1],digits=3)," (",format(result[2],digits=2),"-",format(result[3],digits=2),")",sep="")
+}
+
+survivaldata_uncorrected = sapply(arms, function (x) Surv(lastvisit_uncorrected[x],outcome_uncorrected[x]))
+km_uncorrected = lapply(survivaldata_uncorrected,function (x) survfit(x~1,conf.lower = "peto"))
+survival_uncorrected_28 = sapply(1:length(arms),function (x) paste(format(summary(km_uncorrected[[x]],times=28)$surv*100, digits=3)," (",format(summary(km_uncorrected[[x]],times=28)$lower*100, digits=2),"–",format(summary(km_uncorrected[[x]],times=28)$upper*100, digits=2),")",sep=""))
+if (sum(arm_duration==42)>0) {
+  survival_uncorrected_42 = sapply((1:length(arms))[which(arm_duration==42)],function (x) paste(format(summary(km_uncorrected[[x]],times=42)$surv*100, digits=3)," (",format(summary(km_uncorrected[[x]],times=42)$lower*100, digits=2),"–",format(summary(km_uncorrected[[x]],times=42)$upper*100, digits=2),")",sep=""))
+} else {
+  survival_uncorrected_42 = rep("",length(arms))
+}
+nruns= 1000
+mean_posteriorprob = mean(data$`Molecular correction classification`[data$Classification %in% c("LTF")],na.rm=TRUE)
+survival_corrected_28 = sapply(1:length(arms),function (x) bootstrap_KM(data[arms[[x]],],mean_posteriorprob,28))
+if (sum(arm_duration==42)>0) {
+  survival_corrected_42 = sapply((1:length(arms))[which(arm_duration==42)],function (x) bootstrap_KM(data[arms[[x]],],mean_posteriorprob,42))
+} else {
+  survival_corrected_42 = rep("",length(arms))
+}
+tables_efficacy = matrix("",6,length(arms))
+tables_efficacy[2,] = survival_uncorrected_28
+tables_efficacy[3,arm_duration == 42] = survival_uncorrected_42
+tables_efficacy[5,] = survival_corrected_28
+tables_efficacy[6,arm_duration == 42] = survival_corrected_42
+tables_efficacy[tables_efficacy == "100 (100-100)"] = "100*"
+tables_efficacy[tables_efficacy == "100 (100–100)"] = "100*"
+rownames(tables_efficacy) = c("Uncorrected Kaplan-Meier estimate","Day 28","Day 42","PCR-corrected Kaplan-Meier estimate","Day 28","Day 42")
+
+kbl(tables_efficacy, caption = "Table 4. Efficacy of first-line antimalarials in three therapeutic efficacy monitoring sites in Angola, 2019",escape=F) %>%
+    add_header_above(secondrow_labels) %>%
+add_header_above(firstrow_labels) %>%
+ kable_classic(full_width = F)%>%
+  add_indent(c(2:3,5:6), level_of_indent = 1, all_cols = FALSE)    %>%
+  footnote(general="*Confidence intervals are undefined\nAL: Artemether lumefantrine; ASAQ: Artesunate amodiaquine",general_title="")
+```
+
