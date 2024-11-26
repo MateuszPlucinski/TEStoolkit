@@ -1,0 +1,382 @@
+---
+title: "Match counting for interpretation of recrudescence versus new infection"
+date: "30/03/2023"
+output:
+  html_document:
+    code_folding: hide
+    highlight: zenburn
+    number_sections: no
+    theme: spacelab
+    toc: no
+    toc_collapse: no
+    toc_depth: 4
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Background
+
+This tool can be used to automatically analyze paired genotyping data from study participants with recurrent parasitemia during therapeutic efficacy trials. It is designed to work for data generated using msp1, msp2, and a third length-polymorphic marker. The tool has three components:
+
+* **Input and import data**
+  + The user formats the input data using the provided template, and specifies the file name and directory.
+  + The user specifies the bin size (tolerance for each) marker.
+* **Match determination**
+  + For each locus, the tool determines if there is any allele that is shared by the Day 0 and Day of Failure sample.
+* **Interpretation**
+  + The tool counts how many matches there were between each locus and how many loci had data for both samples.
+  + Based on these two data points, the tool then determines whether the number of matches is sufficient to classify the recurrent parasitemia as a recrudescence or new infection. 
+* **Output**
+  + The tool outputs whether a match was found marker-by-marker and also the final determination.
+
+# Input and import data
+
+The input data must follow the format as specified in the "Sample_input.xlsx" file. This includes:
+
+  + Every row is a sample
+  + Paired samples are specified as "SAMPLEID DX" where "SAMPLEID" is the participant ID and X is either 0 (for Day 0) or the number corresponding to the day of recurrent parasitemia (e.g. 21)
+  + Column names must be of the form "ALLELENAME_X", where "ALLELENAME" is either one of the sub-allelic families of msp1 ("K1", "MAD20", or "RO33") or msp2 ("3D7", "FC27"). The third marker can be variable (e.g. "glurp" or "polya") as long as it follows the "ALLELENAME_X" convention
+  + Each cell is either empty (no data) or contains the fragment length estimated for the particular sample and locus. For samples with more than 1 allele per locus, the first allele should be recorded in "ALLELENAME_1" , the second in "ALLELENAME_2" etc. There is no upper limit on alleles per locus and new columns can be added as long as they follow the correct naming convention. Fragment lengths can be whole numbers or include decimals.
+  + All inputs are case-sensitive.
+  + The top two rows in the template should not be removed.
+  + Missing data should be recorded as empty cells.
+  + The investigator must specify the bin-size for each locus in the R code below. The default is 20 bp for msp1, 20bp for msp2, and 50bp for the third marker. Any two alleles differing by a difference **less than or equal to** the bin size will be considered to be a "match".
+  + Note that the input file must be closed prior to running the script.
+
+```{r, include = FALSE}
+## set working folder (as needed)
+#setwd("")
+
+# input file
+inputfile = "Sample_input.xlsx"
+
+# bin sizes (one for each marker)
+bin_sizes = c(20,20,50)
+
+```
+
+```{r, include = FALSE}
+
+library(gtools)
+library(readxl)
+
+##### read in data
+
+genotypedata_latefailures_original = as.data.frame(read_excel(inputfile, sheet = 1,skip=2))
+genotypedata_latefailures = genotypedata_latefailures_original
+genotypedata_latefailures[genotypedata_latefailures == 0] = NA # missing data has to be coded as NA
+genotypedata_latefailures[genotypedata_latefailures == "0"] = NA # missing data has to be coded as NA
+genotypedata_latefailures[genotypedata_latefailures == "N/A"] = NA # missing data has to be coded as NA
+genotypedata_latefailures[genotypedata_latefailures == "-"] = NA # missing data has to be coded as NA
+genotypedata_latefailures[genotypedata_latefailures == "NA"] = NA # missing data has to be coded as NA
+
+### recode sample names so that each pair has a " Day 0" and a " Day Failure"
+genotypedata_latefailures$Sample.ID = sub("D0$"," Day 0",genotypedata_latefailures$Sample.ID)
+genotypedata_latefailures$Sample.ID = sub("D[0-9]+$"," Day Failure",genotypedata_latefailures$Sample.ID)
+
+genotypedata_latefailures = genotypedata_latefailures[,grepl("Sample", colnames(genotypedata_latefailures)) | grepl("_", colnames(genotypedata_latefailures))]
+
+# each sample in genotypedata_latefailures has to have day 0 and day of Failure
+ids = unique(unlist(strsplit(genotypedata_latefailures$Sample.ID[grepl("Day 0",genotypedata_latefailures$Sample.ID)]," Day 0")))
+if (sum(!paste(ids, "Day Failure") %in% genotypedata_latefailures$Sample.ID) > 0) {
+  print("Error - each sample must have day 0 and day of failure data")
+}
+ids = unique(unlist(strsplit(genotypedata_latefailures$Sample.ID[grepl("Day Failure",genotypedata_latefailures$Sample.ID)]," Day Failure")))
+if (sum(!paste(ids, "Day 0") %in% genotypedata_latefailures$Sample.ID) > 0) {
+  print("Error - each sample must have day 0 and day of failure data")
+}
+
+
+```
+
+# Match determination
+
+
+For each locus, the tool determines if there is any allele that is shared (a "match") by the Day 0 and Day of Failure sample. A match is defined as specified above. For the special case of msp1 and msp2, this determination is made separately for each sub-allelic family. If any of the sub-allelic families have a shared allele, then the locus is considered to match. See [Figure 1](https://pubmed.ncbi.nlm.nih.gov/33724925/).
+
+
+```{r, include = FALSE}
+
+ids = unique(unlist(strsplit(genotypedata_latefailures$Sample.ID[grepl("Day 0",genotypedata_latefailures$Sample.ID)]," Day 0")))
+temp_locinames = unique(sapply(colnames(genotypedata_latefailures)[-1],function(x) strsplit(x,"_")[[1]][1]))
+lastmarker = temp_locinames[length(temp_locinames)]
+locinames = c("msp1","msp2",lastmarker)
+nloci = 3 ## hard-coded
+nids = length(ids)
+
+arbitrarydistance = 1000
+thresholddistance = 500
+
+## recode msp1 and msp2 alleles
+
+returnnonempty = function(x) {
+	x[!is.na(x)]
+}
+
+msp1_mad20 = sapply(1:(dim(genotypedata_latefailures)[1]), function (x) returnnonempty(genotypedata_latefailures[x,grep("MAD20",colnames(genotypedata_latefailures))]))
+msp1_K1 = sapply(1:(dim(genotypedata_latefailures)[1]), function (x) returnnonempty(genotypedata_latefailures[x,grep("K1",colnames(genotypedata_latefailures))])+arbitrarydistance)
+#msp1_RO33 = sapply(1:(dim(genotypedata_latefailures)[1]), function (x) returnnonempty(genotypedata_latefailures[x,grep("RO33",colnames(genotypedata_latefailures))])+arbitrarydistance * 2+rnorm(1,0,sd=4))
+msp1_RO33 = sapply(1:(dim(genotypedata_latefailures)[1]), function (x) returnnonempty(genotypedata_latefailures[x,grep("RO33",colnames(genotypedata_latefailures))])+arbitrarydistance * 2)
+msp1_all = sapply(1:(dim(genotypedata_latefailures)[1]), function (x) c(msp1_mad20[[x]],msp1_K1[[x]],msp1_RO33[[x]]))
+
+msp1_MOI = unlist(lapply(msp1_all,length))
+temp = matrix(NA,(dim(genotypedata_latefailures)[1]),max(msp1_MOI))
+sapply(which(msp1_MOI!=0), function (x) temp[x,1:(msp1_MOI[x])] <<-  msp1_all[[x]][1:(msp1_MOI[x])])
+msp1=temp
+colnames(msp1) = paste("msp1_",1:max(msp1_MOI),sep="")
+
+msp2_3D7 = sapply(1:(dim(genotypedata_latefailures)[1]), function (x) returnnonempty(genotypedata_latefailures[x,grep("3D7",colnames(genotypedata_latefailures))]))
+msp2_FC27 = sapply(1:(dim(genotypedata_latefailures)[1]), function (x) returnnonempty(genotypedata_latefailures[x,grep("FC27",colnames(genotypedata_latefailures))])+arbitrarydistance)
+msp2_all = sapply(1:(dim(genotypedata_latefailures)[1]), function (x) c(msp2_3D7[[x]],msp2_FC27[[x]]))
+
+msp2_MOI = unlist(lapply(msp2_all,length))
+temp = matrix(NA,(dim(genotypedata_latefailures)[1]),max(msp2_MOI))
+sapply(which(msp2_MOI!=0), function (x) temp[x,1:(msp2_MOI[x])] <<-  msp2_all[[x]][1:(msp2_MOI[x])])
+msp2=temp
+colnames(msp2) = paste("msp2_",1:max(msp2_MOI),sep="")
+
+#colnames(genotypedata_latefailures) = gsub("glurp.","glurp_",colnames(genotypedata_latefailures))
+
+temp = cbind(Sample.ID=genotypedata_latefailures$Sample.ID,msp1,msp2,genotypedata_latefailures[,grep(lastmarker,colnames(genotypedata_latefailures))])
+
+genotypedata_latefailures=temp
+
+
+
+##### calculate MOI for each sample
+MOI0 = rep(0,nids)
+MOIf = rep(0,nids)
+for (i in 1:nids) {
+  for (j in 1:nloci) {
+    locicolumns = grepl(paste(locinames[j],"_",sep=""),colnames(genotypedata_latefailures))
+    nalleles0 = sum(!is.na(genotypedata_latefailures[grepl(paste(ids[i],"Day 0"),genotypedata_latefailures$Sample.ID),locicolumns]))
+    nallelesf = sum(!is.na(genotypedata_latefailures[grepl(paste(ids[i],"Day Failure"),genotypedata_latefailures$Sample.ID),locicolumns]))
+    
+    MOI0[i] = max(MOI0[i],nalleles0)
+    MOIf[i] = max(MOIf[i],nallelesf)
+  }
+}
+maxMOI = max(c(MOI0, MOIf),na.rm=TRUE)
+
+
+alleles0 = matrix(NA,nids,maxMOI*nloci)
+allelesf = matrix(NA,nids,maxMOI*nloci)
+mindistance = matrix(NA,nids,nloci)
+alldistance = array(NA,c(nids,nloci,maxMOI*maxMOI))
+
+## read in allele data into usable R objects (arrays)
+for (j in 1:nloci) {
+  locus = locinames[j]
+  locicolumns = grepl(paste(locus,"_",sep=""),colnames(genotypedata_latefailures))
+  oldalleles = (genotypedata_latefailures[,locicolumns])
+  if (length(dim(oldalleles)[2]) == 0) {
+    oldalleles = matrix(oldalleles,length(oldalleles),1)
+  }
+  oldalleles = matrix(as.numeric(unlist(c(oldalleles))),dim(oldalleles)[1],dim(oldalleles)[2])
+  oldalleles[is.na(oldalleles)] = NA
+  
+  alleles0[,(maxMOI*(j-1)+1) : (maxMOI*(j-1) + dim(oldalleles)[2])] = oldalleles[grepl("Day 0",genotypedata_latefailures$Sample.ID),]
+  allelesf[,(maxMOI*(j-1)+1) : (maxMOI*(j-1) + dim(oldalleles)[2])] = oldalleles[grepl("Day Failure",genotypedata_latefailures$Sample.ID),]
+
+}
+
+number_matches = rep(NA,nids)
+match_output = matrix("",nids*2,nloci)
+colnames(match_output) = locinames
+number_loci = rep(NA, nids)
+
+match_tracer = matrix(0,nids*2,nloci)
+## count matches
+for (i in 1:nids) {
+  nmatches_temp = 0
+  nloci_temp = 0
+  for (j in 1:nloci) { # determine which alleles are recrudescing (for beginning, choose closest pair)
+    allpossiblerecrud = expand.grid(1:MOI0[i],1:MOIf[i])
+    if (sum(!is.na(alleles0[i,(maxMOI*(j-1)+1) : (maxMOI*(j-1) + MOI0[i])])) > 0 & sum(!is.na(allelesf[i,(maxMOI*(j-1)+1) : (maxMOI*(j-1) + MOIf[i])])) > 0){
+      nloci_temp = nloci_temp+1
+      
+      closestrecrud = which.min(sapply(1:dim(allpossiblerecrud)[1], function (x) abs(alleles0[i,maxMOI*(j-1)+allpossiblerecrud[x,1]] - allelesf[i,maxMOI*(j-1)+allpossiblerecrud[x,2]])))
+      mindistance[i,j] = abs(alleles0[i,maxMOI*(j-1)+allpossiblerecrud[closestrecrud,1]] - allelesf[i,maxMOI*(j-1)+allpossiblerecrud[closestrecrud,2]])
+      if (mindistance[i,j] <= bin_sizes[j]) # match is found
+      {
+        nmatches_temp=nmatches_temp+1
+        match_output[2*(i-1)+1,j] = "R"
+        match_tracer[2*(i-1)+1,j] = alleles0[i,maxMOI*(j-1)+allpossiblerecrud[closestrecrud,1]]
+        match_tracer[2*(i-1)+2,j] = allelesf[i,maxMOI*(j-1)+allpossiblerecrud[closestrecrud,2]]
+      } else {
+        match_output[2*(i-1)+1,j] = "NI"
+      }
+    } else {
+      match_output[2*(i-1)+1,j] = "IND"
+    }
+  }
+  number_matches[i]=nmatches_temp
+  number_loci[i] = nloci_temp
+}
+
+
+#### determine which alleles to bold in final table
+epsilon = 10^-7 # account for rounding by R
+match_tracer2 = matrix(0,dim(genotypedata_latefailures_original)[1],dim(genotypedata_latefailures_original)[2]-1)
+for (i in 1:(nids*2)) {
+  for (j in 1:nloci) { # determine which alleles are recrudescing (for beginning, choose closest pair)
+    if (j == 1) {
+      if (match_tracer[i,j] > 2*arbitrarydistance) {
+      temp = genotypedata_latefailures_original[i,grep("RO33",colnames(genotypedata_latefailures_original))]
+      match_tracer2[i,which(abs(temp - (match_tracer[i,j]-2*arbitrarydistance)) < epsilon)+grep("RO33",colnames(genotypedata_latefailures_original))[1]-2] = 1
+      } else {
+      if (match_tracer[i,j] > arbitrarydistance) {
+      temp = genotypedata_latefailures_original[i,grep("K1",colnames(genotypedata_latefailures_original))]
+      match_tracer2[i,which(abs(temp - (match_tracer[i,j]-arbitrarydistance)) < epsilon)+grep("K1",colnames(genotypedata_latefailures_original))[1]-2] = 1
+      } else {
+      temp = genotypedata_latefailures_original[i,grep("MAD20",colnames(genotypedata_latefailures_original))]
+      match_tracer2[i,which(abs(temp - (match_tracer[i,j])) < epsilon)+grep("MAD20",colnames(genotypedata_latefailures_original))[1]-2] = 1
+        
+      }
+      }
+    }
+    if (j == 2) {
+      if (match_tracer[i,j] > arbitrarydistance) {
+      temp = genotypedata_latefailures_original[i,grep("FC27",colnames(genotypedata_latefailures_original))]
+      match_tracer2[i,which(abs(temp - (match_tracer[i,j]-arbitrarydistance)) < epsilon)+grep("FC27",colnames(genotypedata_latefailures_original))[1]-2] = 1
+      } else {
+      temp = genotypedata_latefailures_original[i,grep("3D7",colnames(genotypedata_latefailures_original))]
+      match_tracer2[i,which(abs(temp - (match_tracer[i,j])) < epsilon)+grep("3D7",colnames(genotypedata_latefailures_original))[1]-2] = 1
+        
+      }
+    }
+    if (j == 3) {
+      temp = genotypedata_latefailures_original[i,grep(lastmarker,colnames(genotypedata_latefailures_original))]
+      match_tracer2[i,which(abs(temp - (match_tracer[i,j])) < epsilon)+grep(lastmarker,colnames(genotypedata_latefailures_original))[1]-2] = 1
+    }
+  }
+}
+
+```
+
+# Interpretation
+
+Based on how many matches there were between each locus and how many loci had data for both samples, the tool determines whether the number of matches is sufficient to classify the recurrent parasitemia as a recrudescence or new infection. For this, two algorithms are used:
+
+* "3/3", also known as the 2007/2008 WHO algorithm
+  + In this algorithm, a match is needed at every locus for which there are data for both samples in order to define a recrudescence.
+  + Note that despite the "3/3" nomenclature, if there are missing data at a locus for either sample, that locus is not considered. So samples matching at 1/1 or 2/2 loci will also be called a recrudescence.
+  + This is the standard reportable outcome according to WHO guidelines.
+* ">=2/3"
+  + This algorithm is a modified version of the "3/3" algorithm, with the modification that samples with 2 matching loci and 1 unmatched locus will be called a recrudescence. All other calls are the same as above.
+  + This is a secondary reportable outcome according to WHO guidelines.
+  
+``` {r}
+## determine final classifications
+
+## "3/3" requires a match at all loci that are not indeterminate to determine a recrudescence
+## "2/3" is the same as 3/3, but with the addition that samples with 2 matching loci and 1 unmatched locus will be called a recrudescence
+
+#initialize (by default all samples are initialized as new infections)
+three_out_of_three = rep("NI",nids)
+two_out_of_three = rep("NI",nids)
+
+three_out_of_three[number_loci == number_matches] = "R" # any samples where all loci match are a recrudescence for 3/3
+two_out_of_three[number_loci == number_matches] = "R" # any samples where all loci match are a recrudescence for 2/3
+
+three_out_of_three[number_loci == 0] = "IND" # any samples indeterminate for all loci are indeterminate for 3/3
+two_out_of_three[number_loci == 0] = "IND" # any samples indeterminate for all loci are indeterminate for 2/3
+
+two_out_of_three[number_loci == 3 & number_matches==2] = "R" # samples with 2 matching loci and 1 unmatched locus are also a recrudescence for 2/3 
+
+two_out_of_three_output = c(rbind(two_out_of_three, rep("",nids)))
+three_out_of_three_output = c(rbind(three_out_of_three, rep("",nids)))
+
+```
+
+# Output
+
+The table below shows the full genotyping data as imported into the tool and the presence or absence of a match ("R" = match, "NI" = no match, "IND" = missing data) at each locus. If there is a match at any locus, the matching alleles are underlined in the table. The last two columns show the final ">=2/3" and "3/3" determinations. The table can be copied and pasted into Excel using the "Copy Table" button (html file needs to be opened in Chrome).
+
+```{r output}
+
+output_table = cbind(genotypedata_latefailures_original,match_output," >=2/3" = two_out_of_three_output, "` =3/3" = three_out_of_three_output)
+output_table[is.na(output_table)]=""
+
+library(kableExtra)
+
+# formatting loci columns 
+temp = sapply(colnames(genotypedata_latefailures_original)[-1],function(x) strsplit(x,"_")[[1]][1])
+column_breaks_light = c((which(temp[1:(length(temp)-1)] != temp[2:length(temp)]))+2)
+column_breaks_dark = c(which(temp=="K1")[1],which(temp=="3D7")[1],which(temp==lastmarker)[1])+1
+
+firstrow_labels = (c(" ", diff(column_breaks_dark)[1],diff(column_breaks_dark)[2],2,3,2))
+names(firstrow_labels) = c("","msp1","msp2",lastmarker,"Individual marker calls","Final calls")
+
+invisible(sapply(1:dim(match_tracer2)[2], function (x) output_table[,x+1] <<- cell_spec(output_table[,x+1], underline = ifelse(match_tracer2[,x] ==1, T, F))))
+#invisible(sapply((dim(output_table)[2] - 2+1):dim(output_table)[2], function (x) output_table[,x] <<- cell_spec(output_table[,x], latex_background_in_cell = FALSE, background = ifelse(output_table[,x] =="NI", "#58D68D", ifelse(output_table[,x] =="R","#EDBB99","#ffffff00")))))
+
+finaltable = kbl(output_table, caption = "Table. Locus-by-locus calls and final classification of recrudescence versus new infection", escape=FALSE, table.attr="id=finaltable") %>%
+# add_indent(c(2:12,14:17,19:24), level_of_indent = 1) %>%
+#   add_header_above(secondrow_labels) %>%
+  kable_styling(bootstrap_options = "striped", font_size = 10, full_width = TRUE) %>%
+  column_spec((dim(output_table)[2] - nloci-2+1):dim(output_table)[2], bold = T) %>%
+  column_spec((dim(output_table)[2] - 2+1):dim(output_table)[2], border_left = T) %>%
+  column_spec(dim(output_table)[2], border_right = T) %>%
+  column_spec((dim(output_table)[2] - nloci-2+1), border_left = T) %>%
+  column_spec(dim(output_table)[2], background = ifelse(output_table[,dim(output_table)[2]] =="NI", "#58D68D", ifelse(output_table[,dim(output_table)[2]] =="R","#EDBB99","#ffffff00"))) %>%
+  column_spec((dim(output_table)[2] - 2+1), background = ifelse(output_table[,(dim(output_table)[2] - 2+1)] =="NI", "#58D68D", ifelse(output_table[,(dim(output_table)[2] - 2+1)] =="R","#EDBB99","#ffffff00"))) %>%
+  
+  column_spec(column_breaks_light, extra_css = "border-left:1px solid lightgrey;") %>%
+  column_spec(column_breaks_dark, border_left = T) %>%
+  column_spec(1, border_left = T) %>%
+  row_spec(seq(from=0,by=2,length.out = nids+1), extra_css = "border-bottom: 1px solid black") %>%
+  
+  
+#  add_indent(c(3:5,7:12), level_of_indent = 1, all_cols = FALSE) %>%
+  footnote(general="NI: New Infection; R: Recrudescence; IND: Indeterminate",general_title="") %>%
+ add_header_above(firstrow_labels) %>%
+  footnote(general=paste("Bin sizes: msp1 (", bin_sizes[1],"bp); msp2 (", bin_sizes[2],"bp); ", lastmarker, " (", bin_sizes[3], "bp)",sep=""),general_title = "")
+
+
+finaltable
+# 
+# library(DT)
+# create_dt <- function(x){
+#   DT::datatable(x,
+#                 extensions = 'Buttons',
+#                 options = list(dom = 'Blfrtip',
+#                                buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+#                                lengthMenu = list(c(10,25,50,-1),
+#                                                  c(10,25,50,"All"))))
+# }
+# create_dt(finaltable)
+
+```
+<script type="text/javascript">
+function selectElementContents(el) {
+    let body = document.body, range, sel;
+    if (document.createRange && window.getSelection) {
+        range = document.createRange();
+        sel = window.getSelection();
+        sel.removeAllRanges();
+        try {
+            range.selectNodeContents(el);
+            sel.addRange(range);
+        } catch (e) {
+            range.selectNode(el);
+            sel.addRange(range);
+        }
+    } else if (body.createTextRange) {
+        range = body.createTextRange();
+        range.moveToElementText(el);
+        range.select();
+    }
+    document.execCommand("Copy");}
+
+</script>
+<button type="button" onclick="selectElementContents( document.getElementById('finaltable') );">Copy Table</button>
+
+# References
+
+*	[WHO 2007 Genotyping guidance](https://apps.who.int/iris/handle/10665/43824)
+*	[WHO 2021 Genotyping guidance update](https://apps.who.int/iris/bitstream/handle/10665/348385/9789240038363-eng.pdf?sequence=1)
+* [TRENDS in Parasitology review on molecular correction methodology](https://pubmed.ncbi.nlm.nih.gov/36068129/)
